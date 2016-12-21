@@ -1,0 +1,126 @@
+## Data Description
+# The data comes from Austin Animal Center from October 1st, 2013 to March, 2016. 
+#Outcomes represent the status of animals as they leave the Animal Center. 
+#All animals receive a unique Animal ID during intake.
+
+# Importing data
+train <- read.csv(file.choose(), stringsAsFactors = F)
+test <- read.csv(file.choose(), stringsAsFactors = F)
+sample <- read.csv("sample_submission.csv")
+
+# Removing AnimalID and OutcomeSubtype from train
+train <- train[, -c(1, 5)]
+
+# Removing ID from test
+test <- test[, -1]
+
+
+## Data Pre-processing
+
+library(data.table)
+library(lubridate)
+train <- data.table(train)
+test <- data.table(test)
+summary(test)
+
+# Count number of words describing colors
+word_count <- function(x){
+  cleaned <- gsub("/", " ", x)
+  parsed  <- strsplit(cleaned, " ")
+  count <- length(unlist(parsed))
+  return(count)    
+}
+
+# Clean function for training and testing
+clean <- function(df){
+  dt <- data.table(df)
+  
+  print("Simplifying names..")
+  dt[, INI := substr(Name, 1, 1)]
+  dt[INI == "3", Name := "B"]
+  dt[INI == "'", Name := "S"]
+  dt[INI == "0", ]
+  dt[INI == " ", Name := c("J", "M")]
+  
+  
+  # create a new feature named 1:Yes, 0:No
+  
+  dt[INI == "", named := 0]
+  dt[INI != "", named := 1]
+  
+  # Parse date
+  print("Parsing date...\n")
+  dt[, DateTime:= ymd_hms(DateTime)]
+  dt[, time := .(hour(DateTime) + minute(DateTime)/60)]
+  dt[, year := factor(lubridate::year(DateTime))]
+  dt[, month := factor(lubridate::month(DateTime))]
+  dt[, day := as.numeric(lubridate::day(DateTime))]
+  dt[, weekday := lubridate::wday(DateTime)]
+  
+  # Parse animal sex and status
+  print("Parsing sex and status...\n")
+  dt[, sex := "Unknown"]
+  dt[SexuponOutcome %like% "Male", sex := "Male"]
+  dt[SexuponOutcome %like% "Female", sex := "Female"]
+  
+  dt[, status := "Unknown"]
+  dt[SexuponOutcome %like% "Neutered", status := "Sterilized"]
+  dt[SexuponOutcome %like% "Spayed", status := "Sterilized"]
+  dt[SexuponOutcome %like% "Intact", status := "Intact"]
+  
+  # Transform age in days
+  print("Transform age into days...")
+  dt[AgeuponOutcome == "", AgeuponOutcome := "unknown unknown"]
+  parsed_age <- do.call(rbind, sapply(dt[, AgeuponOutcome], strsplit, " "))
+  dt[, c("num", "unit") := .(parsed_age[, 1], parsed_age[, 2])]
+  dt[unit %like% "year", age := as.numeric(num)*365]
+  dt[unit %like% "month", age := as.numeric(num)*30.5]
+  dt[unit %like% "week", age := as.numeric(num)*7]
+  dt[unit %like% "day", age := as.numeric(num)]
+  dt[unit == "unknown", age := NA]
+  
+  # Paring the animal breed
+  print("Paring breed groups...\n")
+  dt[Breed %like% "Mix", Breed := "Mix"]
+  dt[!Breed %like% "Mix", Breed := "Pure"]
+  
+  # Simplifying colors
+  print("Colors into numbers...")
+  color_count <- vector("numeric", length = nrow(dt))
+  for(i in seq_along(dt[, Color])){
+    color_count[i] <- word_count(dt[i, Color])
+  }
+  dt[, color := .(color_count)]
+
+   
+  # Dropping orginal features
+  cat("dropping orginal features...\n")
+  if("OutcomeType" %in% colnames(df)){
+    print("training set")
+    dt <- dt[, .(OutcomeType, AnimalType, Breed, named, year, month, day, weekday, age,
+                 time, sex, status, color)]
+    to_factors <- c("OutcomeType", "AnimalType", "Breed", "named", "sex", "status")
+                                     } else {
+    print("testing set")
+    dt <- dt[, .(AnimalType, Breed, named, year, month, day, weekday, age, time, sex, 
+                 status, color)]
+    to_factors <- c("AnimalType", "Breed", "named", "sex", "status")
+                                            }
+  
+  # Convert to factor
+  for(col in to_factors){
+    print(paste("converting to factors...", col))
+    set(dt, j = col, value = as.factor(dt[[col]]))
+  }
+  
+  for_imp <- which(is.na(dt), arr.ind = T)
+  cat("these missing values need to be imputed: \n")
+  print(for_imp)
+  return(dt)
+}
+
+dt.train <- clean(train)
+dt.test <- clean(test)
+
+# Summary
+summary(dt.train)
